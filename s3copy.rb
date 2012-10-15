@@ -23,12 +23,34 @@ rescue LoadError
   puts "Missing the RightAWS gem! Try: sudo gem install right_aws"
 end
 
+def copy_with_acl(s3, bucket_from, bucket_to, key)
+  acl = s3.get_acl(bucket_from, key)[:object]
+  s3.copy(bucket_from, key, bucket_to, key)
+  s3.put_acl(bucket_to, key, acl)
+end
+
+def object_exists?(s3, bucket, key)
+  header = begin
+    s3.head(bucket, key)
+  rescue RightAws::AwsError
+    nil  
+  end
+  
+  if header
+    return true
+  else
+    return false
+  end
+end
+
 access_key = nil
 secret_key = nil
 
 thread_count = 1
 max_queue = 10 * 1000
 STDOUT.sync = true
+
+clobber = false
 
 bucket_from = nil
 bucket_to   = nil
@@ -54,6 +76,10 @@ begin
             thread_count = val
             max_queue = val * 1000
           end
+  opts.on('-c',
+          '--clobber',
+          nil,
+          'Overwrite existing files (default false)') { clobber = true }
   opts.on('-h', '--help', 'Show this message') do
     puts opts
     exit
@@ -95,7 +121,7 @@ rescue RightAws::AwsError => e
   exit
 end
 
-puts "START: Copying from #{bucket_from} to #{bucket_to}"
+puts "START: Copying from #{bucket_from} to #{bucket_to} (" + (clobber ? 'WILL ' : 'Will NOT ')  + 'overwrite existing files.)'
 
 # Thread management
 threads = []
@@ -103,8 +129,9 @@ queue = Queue.new
 mutex_total = Mutex.new
 
 # Tracking variables
-total_listed = 0
-total_copied = 0
+total_listed  = 0
+total_copied  = 0
+total_skipped = 0
 
 # Key retrieval thread
 threads << Thread.new do
@@ -139,14 +166,21 @@ thread_count.times do |count|
       key = queue.deq
       unless key == :END_OF_BUCKET
         
-        acl = s3.get_acl(bucket_from, key)[:object]
-        s3.copy(bucket_from, key, bucket_to, key)
-        s3.put_acl(bucket_to, key, acl)
+        if clobber
+          copy_with_acl(s3, bucket_from, bucket_to, key)
+          mutex_total.synchronize { total_copied += 1 }
+        else
+          unless object_exists?(s3, bucket_to, key)
+            copy_with_acl(s3, bucket_from, bucket_to, key)
+            mutex_total.synchronize { total_copied += 1 }
+          else
+            mutex_total.synchronize { total_skipped += 1 }
+          end
+        end
 
-        mutex_total.synchronize {total_copied += 1}
-        if (total_copied %100 == 0)
+        if ((total_copied + total_skipped) % 1000 == 0)
           elapsed = Time.now - start_time
-          puts "#{elapsed}: Copied #{total_copied} out of #{total_listed}"
+          puts "#{elapsed}: Total copied: #{total_copied}, Total skipped: #{total_skipped}, Total listed: #{total_listed}"
         end
       end
     end until (key == :END_OF_BUCKET)
