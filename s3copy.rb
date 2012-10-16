@@ -20,7 +20,7 @@ require 'thread'
 begin
   require 'right_aws'
 rescue LoadError
-  puts "Missing the RightAWS gem! Try: sudo gem install right_aws"
+  puts "Missing the RightAWS gem! Try: bundle install"
 end
 
 def copy_with_acl(s3, bucket_from, bucket_to, key)
